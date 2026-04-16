@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>V1 SEkENCER MiNi</title>
+
+<style>
+body{
+margin:0;
+background:radial-gradient(circle at top,#0a0a0a,#000);
+color:#00ffd5;
+font-family:Arial;
+}
+
+header{
+position:sticky;
+top:0;
+background:rgba(0,0,0,0.9);
+padding:10px;
+text-align:center;
+border-bottom:1px solid #00ffd5;
+}
+
+h1{margin:0;font-size:14px;letter-spacing:2px;}
+
+.container{padding:10px;display:flex;flex-direction:column;gap:10px;}
+
+.panel{
+background:rgba(255,255,255,0.03);
+border:1px solid rgba(0,255,213,0.25);
+border-radius:14px;
+padding:10px;
+}
+
+button,input,select{
+background:transparent;
+color:#00ffd5;
+border:1px solid #00ffd5;
+padding:10px;
+border-radius:10px;
+margin:4px;
+}
+
+button:active{
+transform:scale(0.95);
+background:#00ffd5;
+color:black;
+}
+
+.seq{
+display:grid;
+grid-template-columns:repeat(16,1fr);
+gap:4px;
+}
+
+.step{
+height:32px;
+border:1px solid #00ffd5;
+background:#111;
+border-radius:6px;
+}
+
+.step.on{background:#003b35;}
+.step.play{background:#00ffd5;box-shadow:0 0 10px #00ffd5;}
+
+.keyboard{
+display:flex;
+overflow-x:auto;
+gap:6px;
+}
+
+.key{
+min-width:55px;
+height:100px;
+background:white;
+border-radius:8px;
+}
+
+.key:active{background:#00ffd5;}
+
+#bpmDisplay,#randDisplay,#recState{
+margin-left:10px;
+font-size:14px;
+}
+</style>
+</head>
+
+<body>
+
+<header>
+<h1>V1 SEkENCER MiNi</h1>
+</header>
+
+<div class="container">
+
+<!-- TRANSPORT -->
+<div class="panel">
+<button onclick="play()">▶ PLAY</button>
+<button onclick="stop()">⏹ STOP</button>
+
+<button id="recBtn" onclick="toggleRecord()">🔴 RECORD</button>
+<span id="recState">OFF</span>
+
+<button onclick="randomize()">🎲 RANDOM</button>
+<button onclick="save()">💾 SAVE</button>
+<button onclick="load()">📂 LOAD</button>
+<button onclick="resetAll()">🔄 RESET</button>
+</div>
+
+<!-- BPM -->
+<div class="panel">
+<button onclick="bpmDown()">➖ BPM</button>
+<button onclick="bpmUp()">➕ BPM</button>
+<span id="bpmDisplay">120 BPM</span>
+</div>
+
+<!-- RANDOM DENSITY -->
+<div class="panel">
+<button onclick="randDown()">➖ NOTES</button>
+<button onclick="randUp()">➕ NOTES</button>
+<span id="randDisplay">5 NOTES</span>
+</div>
+
+<!-- MIDI -->
+<div class="panel">
+<button onclick="scanMIDI()">🎹 MIDI SCAN</button>
+<select id="midiDevices"></select>
+<button onclick="connectMIDI()">🔌 CONNECT</button>
+</div>
+
+<!-- FX -->
+<div class="panel">
+<label>VOLUME</label>
+<input id="vol" type="range" min="0" max="1" step="0.01" value="0.5">
+
+<label>DISTORTION</label>
+<input id="dist" type="range" min="0" max="50" value="5">
+</div>
+
+<!-- KEYBOARD -->
+<div class="panel">
+<div class="keyboard" id="kbd"></div>
+</div>
+
+<!-- SEQUENCER -->
+<div class="panel">
+<div class="seq" id="seq"></div>
+</div>
+
+</div>
+
+<script>
+
+// ================= AUDIO =================
+const ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+let masterGain = ctx.createGain();
+masterGain.connect(ctx.destination);
+
+let distortion = ctx.createWaveShaper();
+distortion.connect(masterGain);
+
+function osc(note){
+let o = ctx.createOscillator();
+let g = ctx.createGain();
+
+let freq = 440 * Math.pow(2,(note-69)/12);
+o.frequency.value = freq;
+
+o.type="sawtooth";
+g.gain.value = 0.25;
+
+o.connect(g);
+g.connect(distortion);
+
+o.start();
+o.stop(ctx.currentTime + 0.2);
+}
+
+// ================= STATE =================
+let seqArr = Array(16).fill(null);
+let step = 0;
+let playing = false;
+let timer = null;
+let isRecording = false;
+
+// ================= BPM =================
+let bpm = 120;
+
+function bpmUp(){ bpm = Math.min(220, bpm+1); updateUI(); }
+function bpmDown(){ bpm = Math.max(20, bpm-1); updateUI(); }
+
+// ================= RANDOM NOTES COUNT =================
+let noteCount = 5;
+
+function randUp(){
+ noteCount = Math.min(9, noteCount + 1);
+ updateUI();
+}
+
+function randDown(){
+ noteCount = Math.max(2, noteCount - 1);
+ updateUI();
+}
+
+// ================= RANDOM SEQ =================
+function randomize(){
+
+ seqArr = Array(16).fill(null);
+
+ let pos = [];
+
+ while(pos.length < noteCount){
+  let r = Math.floor(Math.random()*16);
+  if(!pos.includes(r)) pos.push(r);
+ }
+
+ pos.forEach(i=>{
+  seqArr[i] = 60 + Math.floor(Math.random()*24);
+ });
+
+ draw();
+}
+
+// ================= RECORD =================
+function toggleRecord(){
+ isRecording = !isRecording;
+ updateRecordUI();
+}
+
+function updateRecordUI(){
+ let btn = document.getElementById("recBtn");
+ let state = document.getElementById("recState");
+
+ if(isRecording){
+  btn.style.background = "#ff004c";
+  btn.style.color = "black";
+  state.innerText = "ON";
+  state.style.color = "#ff004c";
+ } else {
+  btn.style.background = "transparent";
+  btn.style.color = "#00ffd5";
+  state.innerText = "OFF";
+  state.style.color = "#00ffd5";
+ }
+}
+
+// ================= MIDI =================
+let midiAccess = null;
+let midiOut = null;
+
+function scanMIDI(){
+ navigator.requestMIDIAccess().then(m=>{
+  midiAccess=m;
+
+  let sel=document.getElementById("midiDevices");
+  sel.innerHTML="";
+
+  m.outputs.forEach(o=>{
+   let opt=document.createElement("option");
+   opt.value=o.id;
+   opt.textContent=o.name;
+   sel.appendChild(opt);
+  });
+ });
+}
+
+function connectMIDI(){
+ let id=document.getElementById("midiDevices").value;
+ midiOut=midiAccess.outputs.get(id);
+}
+
+function midiOn(n){ if(midiOut) midiOut.send([0x90,n,100]); }
+function midiOff(n){ if(midiOut) midiOut.send([0x80,n,0]); }
+
+// ================= ENGINE =================
+function play(){
+ if(playing) return;
+ playing = true;
+ loop();
+}
+
+function stop(){
+ playing = false;
+ clearTimeout(timer);
+ step = 0;
+ draw();
+}
+
+function loop(){
+ if(!playing) return;
+
+ updateFX();
+
+ let interval = 60000 / bpm / 4;
+ let note = seqArr[step];
+
+ draw();
+
+ if(note !== null){
+  osc(note);
+  midiOn(note);
+  setTimeout(()=>midiOff(note),200);
+ }
+
+ step = (step + 1) % 16;
+ timer = setTimeout(loop, interval);
+}
+
+// ================= FX =================
+function updateFX(){
+ masterGain.gain.value = vol.value;
+ let amount = dist.value;
+ distortion.curve = makeCurve(amount);
+}
+
+function makeCurve(amount){
+ let n=44100;
+ let curve=new Float32Array(n);
+ for(let i=0;i<n;i++){
+  let x=i*2/n-1;
+  curve[i]=(Math.PI+amount)*x/(Math.PI+amount*Math.abs(x));
+ }
+ return curve;
+}
+
+// ================= UI =================
+function updateUI(){
+ document.getElementById("bpmDisplay").innerText = bpm + " BPM";
+ document.getElementById("randDisplay").innerText = noteCount + " NOTES";
+}
+
+// ================= SEQUENCER =================
+let seq=document.getElementById("seq");
+
+for(let i=0;i<16;i++){
+ let d=document.createElement("div");
+ d.className="step";
+
+ d.onclick=()=>{
+  seqArr[i] = seqArr[i] ? null : 60 + Math.floor(Math.random()*12);
+  draw();
+ };
+
+ seq.appendChild(d);
+}
+
+function draw(){
+ document.querySelectorAll(".step").forEach((s,i)=>{
+  s.classList.remove("play");
+  if(i===step) s.classList.add("play");
+  if(seqArr[i]) s.classList.add("on");
+  else s.classList.remove("on");
+ });
+}
+
+// ================= KEYBOARD =================
+let kbd=document.getElementById("kbd");
+
+for(let i=60;i<72;i++){
+ let k=document.createElement("div");
+ k.className="key";
+ k.ontouchstart=()=>noteOn(i);
+ kbd.appendChild(k);
+}
+
+function noteOn(n){
+ osc(n);
+ midiOn(n);
+
+ if(isRecording){
+  seqArr[step] = n;
+  draw();
+ }
+}
+
+// ================= SAVE / LOAD =================
+function save(){
+ localStorage.setItem("v10seq", JSON.stringify(seqArr));
+}
+
+function load(){
+ let d = JSON.parse(localStorage.getItem("v10seq"));
+ if(d) seqArr = d;
+ draw();
+}
+
+// ================= RESET =================
+function resetAll(){
+ playing = false;
+ clearTimeout(timer);
+
+ seqArr = Array(16).fill(null);
+ step = 0;
+ isRecording = false;
+
+ if(midiOut){
+  for(let i=0;i<128;i++){
+   midiOut.send([0x80,i,0]);
+  }
+ }
+
+ draw();
+}
+
+// ================= INIT =================
+updateUI();
+updateRecordUI();
+draw();
+
+</script>
+
+</body>
+</html>
